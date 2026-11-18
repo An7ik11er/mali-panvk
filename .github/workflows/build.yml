@@ -28,9 +28,13 @@ jobs:
 
       - name: Install Host Build Dependencies
         run: |
-          sudo apt-get purge -y needrestart || true
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y --no-install-recommends \
+          # Configure needrestart to be fully automatic and non-interactive
+          sudo mkdir -p /etc/needrestart/conf.d
+          echo '$nrconf{restart} = "a";' | sudo tee /etc/needrestart/conf.d/autorestart.conf > /dev/null
+          echo '$nrconf{ui} = "NeedRestart::UI::stdio";' | sudo tee -a /etc/needrestart/conf.d/autorestart.conf > /dev/null
+
+          sudo -E apt-get update -o Acquire::Retries=3
+          sudo -E apt-get install -y --no-install-recommends \
             ninja-build \
             glslang-tools \
             pkg-config \
