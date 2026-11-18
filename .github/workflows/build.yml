@@ -1,0 +1,63 @@
+name: Build PanVK Android Driver
+
+on:
+  push:
+    branches: [ "**" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Cross-compile libvulkan_panfrost.so
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Host Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson \
+            ninja-build \
+            glslang-tools \
+            pkg-config \
+            python3-mako \
+            python3-packaging \
+            python3-yaml \
+            llvm-18-dev \
+            libclang-18-dev \
+            libclc-18-dev \
+            libllvmspirvlib-18-dev \
+            clang-18
+
+          # Link LLVM 18 tools to standard names
+          sudo ln -sf /usr/bin/llvm-config-18 /usr/bin/llvm-config
+          sudo ln -sf /usr/bin/clang-18 /usr/bin/clang
+          sudo ln -sf /usr/bin/clang++-18 /usr/bin/clang++
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          link-to-sdk: true
+
+      - name: Build PanVK Driver
+        run: |
+          chmod +x build.sh
+          export ANDROID_NDK_HOME="${{ steps.setup-ndk.outputs.ndk-path }}"
+          echo "Using NDK: $ANDROID_NDK_HOME"
+          ./build.sh "$ANDROID_NDK_HOME"
+
+      - name: Upload PanVK Driver Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: panvk-mali-driver
+          path: dist/*
+          if-no-files-found: error
