@@ -73,6 +73,19 @@ jobs:
             echo '```text' >> $GITHUB_STEP_SUMMARY
             tail -n 60 build.log >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 25 build.log | while IFS= read -r line; do
+              echo "::error title=BuildLog::$line"
+            done
+          fi
+          if [ -f build-host/meson-logs/meson-log.txt ]; then
+            grep -i -C 2 "error:" build-host/meson-logs/meson-log.txt | tail -n 20 | while IFS= read -r line; do
+              echo "::error title=HostMeson::$line"
+            done
+          fi
+          if [ -f build-android/meson-logs/meson-log.txt ]; then
+            grep -i -C 2 "error:" build-android/meson-logs/meson-log.txt | tail -n 20 | while IFS= read -r line; do
+              echo "::error title=AndroidMeson::$line"
+            done
           fi
           if [ -d dist ] && [ "$(ls -A dist)" ]; then
             echo "### Packaged Artifacts in dist/:" >> $GITHUB_STEP_SUMMARY
