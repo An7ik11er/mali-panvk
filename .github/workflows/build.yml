@@ -8,10 +8,17 @@ on:
     branches: [ "**" ]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Cross-compile libvulkan_panfrost.so
     runs-on: ubuntu-24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      NEEDRESTART_MODE: a
 
     steps:
       - name: Checkout repository
@@ -21,8 +28,9 @@ jobs:
 
       - name: Install Host Build Dependencies
         run: |
+          sudo apt-get purge -y needrestart || true
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y --no-install-recommends \
             meson \
             ninja-build \
             glslang-tools \
