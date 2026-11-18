@@ -50,14 +50,42 @@ jobs:
 
       - name: Build PanVK Driver
         run: |
+          set -o pipefail
           chmod +x build.sh
           export ANDROID_NDK_HOME="${{ steps.setup-ndk.outputs.ndk-path }}"
           echo "Using NDK: $ANDROID_NDK_HOME"
-          ./build.sh "$ANDROID_NDK_HOME"
+          ./build.sh "$ANDROID_NDK_HOME" 2>&1 | tee build.log
+
+      - name: Publish Diagnostics to Step Summary
+        if: always()
+        run: |
+          echo "## Build Diagnostics" >> $GITHUB_STEP_SUMMARY
+          if [ -f build.log ]; then
+            echo "### Last 60 lines of build.log:" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            tail -n 60 build.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -d dist ] && [ "$(ls -A dist)" ]; then
+            echo "### Packaged Artifacts in dist/:" >> $GITHUB_STEP_SUMMARY
+            ls -la dist >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Upload PanVK Driver Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: panvk-mali-driver
           path: dist/*
           if-no-files-found: error
+
+      - name: Upload Logs on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-failure-logs
+          path: |
+            build.log
+            build-host/meson-logs/meson-log.txt
+            build-android/meson-logs/meson-log.txt
+          if-no-files-found: ignore

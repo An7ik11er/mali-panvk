@@ -119,5 +119,5 @@ fi
 ninja -C "$BUILD" src/panfrost/vulkan/libvulkan_panfrost.so
 
 mkdir -p dist
-"$BIN/llvm-strip" -o "$BUILD/libvulkan_panfrost.so" "$BUILD/src/panfrost/vulkan/libvulkan_panfrost.so"
+"$BIN/llvm-strip" --strip-all -o "$BUILD/libvulkan_panfrost.so" "$BUILD/src/panfrost/vulkan/libvulkan_panfrost.so"
 python3 android/package.py "$BUILD/libvulkan_panfrost.so" dist

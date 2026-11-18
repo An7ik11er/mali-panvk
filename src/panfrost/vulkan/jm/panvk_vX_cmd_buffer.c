@@ -249,12 +249,21 @@ panvk_per_arch(cmd_close_batch)(struct panvk_cmd_buffer *cmdbuf)
 #endif
 
 
+         uint8_t *fbd_cpu = (uint8_t *)fbd.cpu;
+         uint32_t fbd_offset = pan_size(FRAMEBUFFER);
+         uint8_t *zs_crc_ptr = NULL;
+         if (has_zs_ext) {
+            fbd_offset = ALIGN_POT(fbd_offset, pan_alignment(ZS_CRC_EXTENSION));
+            zs_crc_ptr = fbd_cpu + fbd_offset;
+            fbd_offset += pan_size(ZS_CRC_EXTENSION);
+         }
+         fbd_offset = ALIGN_POT(fbd_offset, pan_alignment(RENDER_TARGET));
+         uint8_t *rts_ptr = fbd_cpu + fbd_offset;
+
          const struct pan_fb_descs fb_descs = {
             .fbd = fbd.cpu,
-            .zs_crc = has_zs_ext ? fbd.cpu + pan_size(FRAMEBUFFER) : NULL,
-            .rts = has_zs_ext ? fbd.cpu + pan_size(FRAMEBUFFER) +
-                                   pan_size(ZS_CRC_EXTENSION)
-                              : fbd.cpu + pan_size(FRAMEBUFFER),
+            .zs_crc = (struct mali_zs_crc_extension_packed *)zs_crc_ptr,
+            .rts = (struct mali_rgb_render_target_packed *)rts_ptr,
          };
          tagged_fbd_ptr |= GENX(pan_emit_fb_desc)(&fbd_info, &fb_descs);
 
