@@ -282,6 +282,8 @@ alloc_pre_post_dcds(struct panvk_cmd_buffer *cmdbuf,
    if (!dcd.gpu)
       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 
+   memset(dcd.cpu, 0, dcd_count * pan_size(DRAW));
+
    fs->dcd_pointer = dcd.gpu;
    *dcds = dcd.cpu;
 

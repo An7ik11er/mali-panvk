@@ -87,9 +87,31 @@ panvk_kbase_report_faults(struct panvk_device *dev, struct panvk_cmd_buffer *con
          unsigned k = 0;
          util_dynarray_foreach(&batch->jobs, void *, job) {
             const uint32_t *w = *job;
+            uint64_t fault_addr = (uint64_t)w[2] | ((uint64_t)w[3] << 32);
             mesa_loge("panvk: batch %u job %u: status 0x%x type %u index %u deps %u,%u "
                       "fault 0x%" PRIx64, b, k, w[0], (w[4] >> 1) & 0x7f, w[4] >> 16,
-                      w[5] & 0xffff, w[5] >> 16, (uint64_t)w[2] | ((uint64_t)w[3] << 32));
+                      w[5] & 0xffff, w[5] >> 16, fault_addr);
+            if (fault_addr && w[0] != 0x1) {
+               simple_mtx_lock(&dev->mempools.exec.lock);
+               list_for_each_entry(struct panvk_priv_bo, bo, &dev->mempools.exec.bos, node) {
+                  if (bo->bo && bo->addr.host &&
+                      fault_addr >= bo->bo->gpu_va &&
+                      fault_addr < bo->bo->gpu_va + bo->bo->size) {
+                     uint64_t offset = fault_addr - bo->bo->gpu_va;
+                     const uint32_t *dump_ptr = (const uint32_t *)((const uint8_t *)bo->addr.host + (offset & ~0x3full));
+                     mesa_loge("panvk: exec slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):",
+                               bo->bo->gpu_va + (offset & ~0x3full), fault_addr);
+                     for (int line = 0; line < 4; line++) {
+                        mesa_loge("panvk:   +0x%02x: %08x %08x %08x %08x",
+                                  line * 16,
+                                  dump_ptr[line * 4 + 0], dump_ptr[line * 4 + 1],
+                                  dump_ptr[line * 4 + 2], dump_ptr[line * 4 + 3]);
+                     }
+                     break;
+                  }
+               }
+               simple_mtx_unlock(&dev->mempools.exec.lock);
+            }
             k++;
          }
          b++;
@@ -116,6 +138,7 @@ panvk_kbase_submit_done(void *data, bool ok)
    if (!ok) {
       mesa_loge("panvk: the kbase submission did not complete");
       panvk_kbase_report_faults(dev, d->cmdbufs, d->nr_cmdbufs);
+      vk_device_set_lost(&dev->vk, "panvk: kbase submission did not complete");
    }
 
    for (uint32_t j = 0; j < d->nr_cmdbufs; ++j) {

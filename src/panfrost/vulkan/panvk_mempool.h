@@ -279,8 +279,9 @@ static inline struct panvk_priv_mem
 panvk_pool_upload_aligned(struct panvk_pool *pool, const void *data, size_t sz,
                           unsigned alignment)
 {
+   size_t aligned_sz = ALIGN_POT(sz, alignment);
    struct panvk_pool_alloc_info info = {
-      .size = sz,
+      .size = aligned_sz,
       .alignment = alignment,
    };
 
@@ -288,7 +289,15 @@ panvk_pool_upload_aligned(struct panvk_pool *pool, const void *data, size_t sz,
    void *host_addr = panvk_priv_mem_host_addr(mem);
    if (likely(host_addr != NULL)) {
       memcpy(host_addr, data, sz);
-      panvk_priv_mem_flush(mem, 0, sz);
+      if (aligned_sz > sz)
+         memset((uint8_t *)host_addr + sz, 0, aligned_sz - sz);
+      panvk_priv_mem_flush(mem, 0, aligned_sz);
+#if defined(__aarch64__)
+      if (pool->props.create_flags & PAN_KMOD_BO_FLAG_EXECUTABLE) {
+         __builtin___clear_cache((char *)host_addr,
+                                 (char *)host_addr + aligned_sz);
+      }
+#endif
    }
    return mem;
 }

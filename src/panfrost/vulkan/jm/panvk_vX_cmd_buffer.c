@@ -228,7 +228,7 @@ panvk_per_arch(cmd_close_batch)(struct panvk_cmd_buffer *cmdbuf)
          util_bitcount(view_mask) :
          batch->fb.layer_count;
 
-      const bool has_zs_ext = pan_fb_has_zs(&render->fb.layout);
+      const bool has_zs_ext = GENX(pan_fb_needs_zs_crc_ext)(&fbd_info);
       for (uint32_t i = 0; i < enabled_layer_count; i++) {
          uint32_t layer_id = (view_mask != 0) ? u_bit_scan(&view_mask) : i;
          VkResult result;
@@ -294,7 +294,11 @@ panvk_per_arch(cmd_alloc_fb_desc)(struct panvk_cmd_buffer *cmdbuf)
 
    struct panvk_rendering_state *render = &cmdbuf->state.gfx.render;
    const struct pan_fb_layout *fb = &render->fb.layout;
-   bool has_zs_ext = pan_fb_has_zs(fb);
+   struct pan_fb_desc_info fbd_info = {
+      .fb = fb,
+      .store = render->fb.needs_store ? &render->fb.store : &render->fb.spill.store,
+   };
+   bool has_zs_ext = GENX(pan_fb_needs_zs_crc_ext)(&fbd_info);
    batch->fb.layer_count = render->layer_count;
    unsigned fbd_size = pan_size(FRAMEBUFFER);
 

@@ -661,7 +661,7 @@ kbase_kmod_bo_alloc(struct pan_kmod_dev *dev, struct pan_kmod_vm *exclusive_vm, 
          .va_pages = pages,
          .commit_pages = grow ? MIN2(pages, KBASE_GROW_INITIAL_PAGES) : pages,
          .extension = grow ? KBASE_GROW_STEP_PAGES : 0,
-         .flags = exec ? KBASE_MEM_FLAGS_EXEC
+         .flags = exec ? (KBASE_MEM_FLAGS_EXEC | BASE_MEM_COHERENT_LOCAL)
                        : KBASE_MEM_FLAGS_RW | (grow ? BASE_MEM_GROW_ON_GPF : 0) |
                             ((flags & PAN_KMOD_BO_FLAG_WB_MMAP) ? BASE_MEM_CACHED_CPU : 0),
       },
@@ -682,11 +682,17 @@ kbase_kmod_bo_alloc(struct pan_kmod_dev *dev, struct pan_kmod_vm *exclusive_vm, 
       req.in.flags = 0xfull | BASE_MEM_SAME_VA | BASE_MEM_CSF_EVENT;
 
    if (pan_kmod_ioctl(dev->fd, KBASE_IOCTL_MEM_ALLOC, &req)) {
+      if (exec && (req.in.flags & BASE_MEM_COHERENT_LOCAL)) {
+         req.in.flags &= ~BASE_MEM_COHERENT_LOCAL;
+         if (!pan_kmod_ioctl(dev->fd, KBASE_IOCTL_MEM_ALLOC, &req))
+            goto alloc_ok;
+      }
       mesa_loge("kbase: MEM_ALLOC of %" PRIu64 " pages, flags 0x%" PRIx64 ", failed (err=%d)",
                 pages, (uint64_t)req.in.flags, errno);
       pan_kmod_dev_free(dev, bo);
       return NULL;
    }
+alloc_ok:
 
    bo->exec = exec;
    bo->anchor = NULL;
