@@ -161,7 +161,9 @@ pan_jc_add_job(struct pan_jc *jc, enum mali_job_type type, bool barrier,
    pan_cast_and_pack(job->cpu, JOB_HEADER, header) {
       header.type = type;
       header.barrier = barrier;
+#if PAN_ARCH < 9
       header.invalidate_cache = (index == 1);
+#endif
       header.suppress_prefetch = suppress_prefetch;
       header.index = index;
       header.dependency_1 = local_dep;
