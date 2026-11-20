@@ -95,12 +95,12 @@ panvk_kbase_report_faults(struct panvk_device *dev, struct panvk_cmd_buffer *con
                simple_mtx_lock(&dev->mempools.exec.lock);
                list_for_each_entry(struct panvk_priv_bo, bo, &dev->mempools.exec.bos, node) {
                   if (bo->bo && bo->addr.host &&
-                      fault_addr >= bo->bo->gpu_va &&
-                      fault_addr < bo->bo->gpu_va + bo->bo->size) {
-                     uint64_t offset = fault_addr - bo->bo->gpu_va;
+                      fault_addr >= bo->addr.dev &&
+                      fault_addr < bo->addr.dev + bo->bo->size) {
+                     uint64_t offset = fault_addr - bo->addr.dev;
                      const uint32_t *dump_ptr = (const uint32_t *)((const uint8_t *)bo->addr.host + (offset & ~0x3full));
                      mesa_loge("panvk: exec slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):",
-                               bo->bo->gpu_va + (offset & ~0x3full), fault_addr);
+                               bo->addr.dev + (offset & ~0x3full), fault_addr);
                      for (int line = 0; line < 4; line++) {
                         mesa_loge("panvk:   +0x%02x: %08x %08x %08x %08x",
                                   line * 16,
