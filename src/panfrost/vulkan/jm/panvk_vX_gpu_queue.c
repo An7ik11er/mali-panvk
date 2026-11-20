@@ -100,7 +100,7 @@ panvk_kbase_report_faults(struct panvk_device *dev, struct panvk_cmd_buffer *con
                      uint64_t offset = fault_addr - bo->addr.dev;
                      const uint32_t *dump_ptr = (const uint32_t *)((const uint8_t *)bo->addr.host + (offset & ~0x3full));
                      mesa_loge("panvk: exec slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):",
-                               bo->addr.dev + (offset & ~0x3full), fault_addr);
+                               (uint64_t)(bo->addr.dev + (offset & ~0x3full)), fault_addr);
                      for (int line = 0; line < 4; line++) {
                         mesa_loge("panvk:   +0x%02x: %08x %08x %08x %08x",
                                   line * 16,
