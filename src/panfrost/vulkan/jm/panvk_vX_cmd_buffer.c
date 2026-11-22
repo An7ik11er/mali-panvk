@@ -133,6 +133,7 @@ panvk_per_arch(cmd_close_batch)(struct panvk_cmd_buffer *cmdbuf)
          list_addtail(&batch->node, &cmdbuf->batches);
       }
       cmdbuf->cur_batch = NULL;
+      cmdbuf->state.indirect_heap = 0;
 #if PAN_ARCH < 10
       cmdbuf->state.gfx.xfb.last_job = 0;
 #endif
@@ -277,6 +278,7 @@ panvk_per_arch(cmd_close_batch)(struct panvk_cmd_buffer *cmdbuf)
    }
 
    cmdbuf->cur_batch = NULL;
+   cmdbuf->state.indirect_heap = 0;
 #if PAN_ARCH < 10
    /* Job indices belong to a batch's chain. */
    cmdbuf->state.gfx.xfb.last_job = 0;
@@ -294,11 +296,19 @@ panvk_per_arch(cmd_alloc_fb_desc)(struct panvk_cmd_buffer *cmdbuf)
 
    struct panvk_rendering_state *render = &cmdbuf->state.gfx.render;
    const struct pan_fb_layout *fb = &render->fb.layout;
-   struct pan_fb_desc_info fbd_info = {
+   if (!fb->tile_size_px)
+      panvk_per_arch(cmd_select_tile_size)(cmdbuf);
+
+   struct pan_fb_desc_info fbd_info_store = {
       .fb = fb,
-      .store = render->fb.needs_store ? &render->fb.store : &render->fb.spill.store,
+      .store = &render->fb.store,
    };
-   bool has_zs_ext = GENX(pan_fb_needs_zs_crc_ext)(&fbd_info);
+   struct pan_fb_desc_info fbd_info_spill = {
+      .fb = fb,
+      .store = &render->fb.spill.store,
+   };
+   bool has_zs_ext = GENX(pan_fb_needs_zs_crc_ext)(&fbd_info_store) ||
+                     GENX(pan_fb_needs_zs_crc_ext)(&fbd_info_spill);
    batch->fb.layer_count = render->layer_count;
    unsigned fbd_size = pan_size(FRAMEBUFFER);
 

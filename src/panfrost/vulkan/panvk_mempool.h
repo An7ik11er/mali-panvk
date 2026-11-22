@@ -11,6 +11,7 @@
 #include "kmod/pan_kmod.h"
 #include "pan_pool.h"
 
+#include "util/cache_ops.h"
 #include "util/list.h"
 #include "util/simple_mtx.h"
 
@@ -292,12 +293,11 @@ panvk_pool_upload_aligned(struct panvk_pool *pool, const void *data, size_t sz,
       if (aligned_sz > sz)
          memset((uint8_t *)host_addr + sz, 0, aligned_sz - sz);
       panvk_priv_mem_flush(mem, 0, aligned_sz);
-#if defined(__aarch64__)
-      if (pool->props.create_flags & PAN_KMOD_BO_FLAG_EXECUTABLE) {
-         __builtin___clear_cache((char *)host_addr,
-                                 (char *)host_addr + aligned_sz);
+      if ((pool->props.create_flags & PAN_KMOD_BO_FLAG_EXECUTABLE) &&
+          util_has_cache_ops()) {
+         /* Ensure GPU instruction fetches see the uploaded shader code in PoC. */
+         util_flush_range(host_addr, aligned_sz);
       }
-#endif
    }
    return mem;
 }

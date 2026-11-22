@@ -1143,6 +1143,11 @@ panvk_per_arch(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer,
    gfx_state_set_dirty(cmdbuf, VB);
 }
 
+/* On kbase UMA, engines often allocate shared host-mapped upload/persistent blocks with
+ * STORAGE_BUFFER | TRANSFER_DST | SHADER_DEVICE_ADDRESS even when indices are written by CPU.
+ * Set PANVK_ASSUME_CPU_IB=0 to restore strict usage-flag filtering. */
+DEBUG_GET_ONCE_BOOL_OPTION(panvk_assume_cpu_ib, "PANVK_ASSUME_CPU_IB", true)
+
 VKAPI_ATTR void VKAPI_CALL
 panvk_per_arch(CmdBindIndexBuffer2)(VkCommandBuffer commandBuffer,
                                     VkBuffer buffer, VkDeviceSize offset,
@@ -1167,9 +1172,12 @@ panvk_per_arch(CmdBindIndexBuffer2)(VkCommandBuffer commandBuffer,
          VK_BUFFER_USAGE_2_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT |
          VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT_KHR;
       struct panvk_device *dev = to_panvk_device(cmdbuf->vk.base.device);
+      const bool assume_cpu_ib =
+         debug_get_option_panvk_assume_cpu_ib() && buf->cpu_readable_mem;
       cmdbuf->state.gfx.ib.cpu_readable =
          PAN_ARCH < 10 && pan_kmod_dev_is_kbase(dev->kmod.dev) &&
-         cmdbuf->state.gfx.ib.dev_addr && !(buf->vk.usage & gpu_writes);
+         cmdbuf->state.gfx.ib.dev_addr &&
+         (!(buf->vk.usage & gpu_writes) || assume_cpu_ib);
    } else {
       cmdbuf->state.gfx.ib.cpu_readable = false;
       cmdbuf->state.gfx.ib.size = 0;

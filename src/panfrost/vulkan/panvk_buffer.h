@@ -14,6 +14,7 @@ struct panvk_priv_bo;
 
 struct panvk_buffer {
    struct vk_buffer vk;
+   bool cpu_readable_mem;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(panvk_buffer, vk.base, VkBuffer,

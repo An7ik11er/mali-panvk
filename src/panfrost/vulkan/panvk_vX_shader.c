@@ -457,8 +457,9 @@ panvk_get_nir_options(UNUSED struct vk_physical_device *vk_pdev,
 
 /* RelaxedPrecision runs in 16 bits: ALU, texture results and fragment colour outputs, as the
  * vendor driver does (Mali-G57: a mediump textured fill shader runs 20% faster there, and not at
- * all faster here before this). PANVK_NO_MEDIUMP=1 keeps everything 32-bit. */
-DEBUG_GET_ONCE_BOOL_OPTION(panvk_no_mediump, "PANVK_NO_MEDIUMP", false)
+ * all faster here before this). PANVK_NO_MEDIUMP=1 keeps everything 32-bit.
+ * Default to 32-bit on Bifrost (PAN_ARCH < 9) to avoid FP16 HDR/tone-mapping overflow. */
+DEBUG_GET_ONCE_BOOL_OPTION(panvk_no_mediump, "PANVK_NO_MEDIUMP", PAN_ARCH < 9)
 
 static bool
 panvk_mediump_16bit(void)

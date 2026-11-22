@@ -106,7 +106,7 @@ panvk_device_init_mempools(struct panvk_device *dev)
          dev, PAN_KMOD_BO_FLAG_EXECUTABLE | PAN_KMOD_BO_FLAG_WB_MMAP),
       .slab_size = 16 * 1024,
       .label = "Device executable memory pool (shaders)",
-      .owns_bos = false,
+      .owns_bos = true,
       .needs_locking = true,
       .prealloc = false,
    };

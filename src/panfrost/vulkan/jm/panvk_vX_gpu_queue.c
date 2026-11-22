@@ -35,7 +35,12 @@
 
 #include "kmod/kbase_kmod.h"
 #include "panvk_bc_emu.h"
+#include "util/u_atomic.h"
 #include "util/u_sync_provider.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 static void panvk_signal_event_syncobjs(struct panvk_gpu_queue *queue,
                                         struct panvk_batch *batch);
@@ -72,6 +77,90 @@ panvk_queue_prepare_batch(struct panvk_device *dev, struct panvk_cmd_buffer *cmd
    pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
 }
 
+static void
+panvk_dump_exec_fault_slab(struct panvk_device *dev, struct list_head *bos,
+                           uint64_t fault_addr, bool *dumped, FILE *flog)
+{
+   list_for_each_entry(struct panvk_priv_bo, bo, bos, node) {
+      if (bo->bo && bo->addr.host &&
+          fault_addr >= bo->addr.dev &&
+          fault_addr < bo->addr.dev + bo->bo->size) {
+         uint64_t offset = fault_addr - bo->addr.dev;
+         const uint32_t *dump_ptr = (const uint32_t *)((const uint8_t *)bo->addr.host + (offset & ~0x3full));
+         mesa_loge("panvk: exec slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):",
+                   (uint64_t)(bo->addr.dev + (offset & ~0x3full)), fault_addr);
+         if (flog) {
+            fprintf(flog, "panvk: exec slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):\n",
+                    (uint64_t)(bo->addr.dev + (offset & ~0x3full)), fault_addr);
+         }
+         for (int line = 0; line < 4; line++) {
+            mesa_loge("panvk:   +0x%02x: %08x %08x %08x %08x",
+                      line * 16,
+                      dump_ptr[line * 4 + 0], dump_ptr[line * 4 + 1],
+                      dump_ptr[line * 4 + 2], dump_ptr[line * 4 + 3]);
+            if (flog) {
+               fprintf(flog, "panvk:   +0x%02x: %08x %08x %08x %08x\n",
+                       line * 16,
+                       dump_ptr[line * 4 + 0], dump_ptr[line * 4 + 1],
+                       dump_ptr[line * 4 + 2], dump_ptr[line * 4 + 3]);
+            }
+         }
+         *dumped = true;
+         break;
+      }
+   }
+}
+
+static FILE *
+panvk_open_first_fault_log(char *out_path, size_t out_size)
+{
+   static int32_t dumped = 0;
+   if (p_atomic_cmpxchg(&dumped, 0, 1) != 0)
+      return NULL;
+
+   const char *env_path = getenv("PANVK_FAULT_LOG");
+   if (env_path && env_path[0]) {
+      snprintf(out_path, out_size, "%s", env_path);
+      FILE *f = fopen(out_path, "w");
+      if (f)
+         return f;
+   }
+
+   /* On non-root Android, /sdcard/Android/data/<pkg>/files/ is writable by the app
+    * without storage permissions and directly readable via `adb pull`. */
+   FILE *cmd = fopen("/proc/self/cmdline", "r");
+   if (cmd) {
+      char pkg[128] = {0};
+      size_t n = fread(pkg, 1, sizeof(pkg) - 1, cmd);
+      fclose(cmd);
+      if (n > 0) {
+         char *colon = strchr(pkg, ':');
+         if (colon)
+            *colon = '\0';
+         snprintf(out_path, out_size, "/sdcard/Android/data/%s/files/panvk_first_fault.log", pkg);
+         FILE *f = fopen(out_path, "w");
+         if (f)
+            return f;
+         snprintf(out_path, out_size, "/data/user/0/%s/cache/panvk_first_fault.log", pkg);
+         f = fopen(out_path, "w");
+         if (f)
+            return f;
+      }
+   }
+
+   const char *dir = getenv("MESA_SHADER_CACHE_DIR");
+   if (!dir || !dir[0])
+      dir = getenv("TMPDIR");
+   if (dir && dir[0]) {
+      snprintf(out_path, out_size, "%s/panvk_first_fault.log", dir);
+      FILE *f = fopen(out_path, "w");
+      if (f)
+         return f;
+   }
+
+   return NULL;
+}
+
 /* A submission that did not complete: say which job stopped it. The job manager writes each
  * job header's exception status (word 0) and fault pointer (words 2-3) back when the job ends,
  * and leaves 0 in the ones it never ran -- that is how the TLS overrun on the Mali-G52 was found
@@ -81,41 +170,59 @@ panvk_kbase_report_faults(struct panvk_device *dev, struct panvk_cmd_buffer *con
                           unsigned nr_cmdbufs)
 {
    pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
+   char fault_path[256] = {0};
+   FILE *flog = panvk_open_first_fault_log(fault_path, sizeof(fault_path));
+#define FAULT_LOG(fmt, ...) do { \
+      mesa_loge(fmt, ##__VA_ARGS__); \
+      if (flog) fprintf(flog, fmt "\n", ##__VA_ARGS__); \
+   } while (0)
+
    unsigned b = 0;
+   unsigned logged = 0;
    for (uint32_t j = 0; j < nr_cmdbufs; ++j) {
       list_for_each_entry(struct panvk_batch, batch, &cmdbufs[j]->batches, node) {
          unsigned k = 0;
+         const uint32_t *prev_done = NULL;
+         unsigned prev_done_k = 0;
          util_dynarray_foreach(&batch->jobs, void *, job) {
             const uint32_t *w = *job;
+            if (w[0] == 0x1) {
+               prev_done = w;
+               prev_done_k = k;
+               k++;
+               continue;
+            }
+            if (prev_done && logged < 32) {
+               FAULT_LOG("panvk: batch %u job %u (prev DONE): status 0x%x type %u index %u deps %u,%u",
+                         b, prev_done_k, prev_done[0], (prev_done[4] >> 1) & 0x7f,
+                         prev_done[4] >> 16, prev_done[5] & 0xffff, prev_done[5] >> 16);
+               prev_done = NULL;
+            }
             uint64_t fault_addr = (uint64_t)w[2] | ((uint64_t)w[3] << 32);
-            mesa_loge("panvk: batch %u job %u: status 0x%x type %u index %u deps %u,%u "
-                      "fault 0x%" PRIx64, b, k, w[0], (w[4] >> 1) & 0x7f, w[4] >> 16,
-                      w[5] & 0xffff, w[5] >> 16, fault_addr);
-            if (fault_addr && w[0] != 0x1) {
+            if (logged < 32) {
+               FAULT_LOG("panvk: batch %u job %u: status 0x%x type %u index %u deps %u,%u "
+                         "fault 0x%" PRIx64, b, k, w[0], (w[4] >> 1) & 0x7f, w[4] >> 16,
+                         w[5] & 0xffff, w[5] >> 16, fault_addr);
+               logged++;
+            }
+            if (fault_addr) {
+               bool dumped = false;
                simple_mtx_lock(&dev->mempools.exec.lock);
-               list_for_each_entry(struct panvk_priv_bo, bo, &dev->mempools.exec.bos, node) {
-                  if (bo->bo && bo->addr.host &&
-                      fault_addr >= bo->addr.dev &&
-                      fault_addr < bo->addr.dev + bo->bo->size) {
-                     uint64_t offset = fault_addr - bo->addr.dev;
-                     const uint32_t *dump_ptr = (const uint32_t *)((const uint8_t *)bo->addr.host + (offset & ~0x3full));
-                     mesa_loge("panvk: exec slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):",
-                               (uint64_t)(bo->addr.dev + (offset & ~0x3full)), fault_addr);
-                     for (int line = 0; line < 4; line++) {
-                        mesa_loge("panvk:   +0x%02x: %08x %08x %08x %08x",
-                                  line * 16,
-                                  dump_ptr[line * 4 + 0], dump_ptr[line * 4 + 1],
-                                  dump_ptr[line * 4 + 2], dump_ptr[line * 4 + 3]);
-                     }
-                     break;
-                  }
-               }
+               panvk_dump_exec_fault_slab(dev, &dev->mempools.exec.bos, fault_addr, &dumped, flog);
+               if (!dumped)
+                  panvk_dump_exec_fault_slab(dev, &dev->mempools.exec.big_bos, fault_addr, &dumped, flog);
                simple_mtx_unlock(&dev->mempools.exec.lock);
             }
             k++;
          }
          b++;
       }
+   }
+#undef FAULT_LOG
+   if (flog) {
+      fflush(flog);
+      fclose(flog);
+      mesa_loge("panvk: first GPU fault dump saved to %s", fault_path);
    }
 }
 
@@ -125,6 +232,8 @@ struct panvk_kbase_done {
    uint32_t nr_cmdbufs, nr_signals;
    struct panvk_cmd_buffer **cmdbufs;
    uint32_t *signals;
+   int32_t pending;
+   int32_t failed;
 };
 
 /* On the kmod's event thread, when every atom of the submission has reported. The command
@@ -135,7 +244,14 @@ panvk_kbase_submit_done(void *data, bool ok)
    struct panvk_kbase_done *d = data;
    struct panvk_device *dev = to_panvk_device(d->queue->vk.base.device);
 
-   if (!ok) {
+   if (!ok && p_atomic_cmpxchg(&d->failed, 0, 1) == 0)
+      mesa_loge("panvk: kbase submission chunk failed (pending=%d)",
+                p_atomic_read(&d->pending));
+
+   if (!p_atomic_dec_zero(&d->pending))
+      return;
+
+   if (p_atomic_read(&d->failed)) {
       mesa_loge("panvk: the kbase submission did not complete");
       panvk_kbase_report_faults(dev, d->cmdbufs, d->nr_cmdbufs);
       vk_device_set_lost(&dev->vk, "panvk: kbase submission did not complete");
@@ -186,6 +302,8 @@ panvk_queue_submit_kbase_chain(struct panvk_gpu_queue *queue, struct vk_queue_su
    d->nr_signals = nr_signals;
    d->cmdbufs = (struct panvk_cmd_buffer **)(d + 1);
    d->signals = (uint32_t *)(d->cmdbufs + nr_cmdbufs);
+   p_atomic_set(&d->pending, 1);
+   p_atomic_set(&d->failed, 0);
 
    /* Kept here too: d belongs to the event thread once submitted. */
    uint32_t signals[MAX2(nr_signals, 1)];
@@ -222,8 +340,13 @@ panvk_queue_submit_kbase_chain(struct panvk_gpu_queue *queue, struct vk_queue_su
 
          /* More than one submission takes: send what there is, the rest runs after it. */
          if (nr_atoms + 2 > PAN_KMOD_KBASE_MAX_ATOMS) {
-            if (!pan_kmod_kbase_submit_async(dev->kmod.dev, atoms, nr_atoms, NULL, NULL, NULL))
-               mesa_loge("panvk: the kbase submission was refused");
+            p_atomic_inc(&d->pending);
+            if (!pan_kmod_kbase_submit_async(dev->kmod.dev, atoms, nr_atoms,
+                                             NULL, panvk_kbase_submit_done, d)) {
+               mesa_loge("panvk: the intermediate kbase submission was refused");
+               p_atomic_set(&d->failed, 1);
+               p_atomic_dec(&d->pending);
+            }
             nr_atoms = 0;
          }
 
@@ -295,13 +418,21 @@ panvk_queue_submit_kbase_chain(struct panvk_gpu_queue *queue, struct vk_queue_su
    pan_kmod_kbase_sync_submitted(signals, nr_signals);
 
    int fence = -1;
-   const uint64_t seq = pan_kmod_kbase_submit_async(
-      dev->kmod.dev, atoms, nr_atoms, nr_signals ? &fence : NULL, panvk_kbase_submit_done, d);
-   if (refresh)
-      panvk_per_arch(bc_emu_refresh_end)(dev, refresh, NULL, seq);
-   if (!seq) {
-      /* Signal anyway, so nothing waits forever on work that was never sent. */
-      panvk_kbase_submit_done(d, false);
+   uint64_t seq = 0;
+   if (nr_atoms > 0) {
+      seq = pan_kmod_kbase_submit_async(
+         dev->kmod.dev, atoms, nr_atoms, nr_signals ? &fence : NULL, panvk_kbase_submit_done, d);
+      if (refresh)
+         panvk_per_arch(bc_emu_refresh_end)(dev, refresh, NULL, seq);
+      if (!seq) {
+         /* Signal anyway, so nothing waits forever on work that was never sent. */
+         panvk_kbase_submit_done(d, false);
+         return;
+      }
+   } else {
+      if (refresh)
+         panvk_per_arch(bc_emu_refresh_end)(dev, refresh, NULL, 0);
+      panvk_kbase_submit_done(d, true);
       return;
    }
 

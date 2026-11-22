@@ -655,17 +655,12 @@ kbase_kmod_bo_alloc(struct pan_kmod_dev *dev, struct pan_kmod_vm *exclusive_vm, 
    if (!bo)
       return NULL;
 
+   static bool exec_no_coherent_local = false;
    const uint64_t pages = DIV_ROUND_UP(size, 4096);
-   union kbase_ioctl_mem_alloc req = {
-      .in = {
-         .va_pages = pages,
-         .commit_pages = grow ? MIN2(pages, KBASE_GROW_INITIAL_PAGES) : pages,
-         .extension = grow ? KBASE_GROW_STEP_PAGES : 0,
-         .flags = exec ? (KBASE_MEM_FLAGS_EXEC | BASE_MEM_COHERENT_LOCAL)
-                       : KBASE_MEM_FLAGS_RW | (grow ? BASE_MEM_GROW_ON_GPF : 0) |
-                            ((flags & PAN_KMOD_BO_FLAG_WB_MMAP) ? BASE_MEM_CACHED_CPU : 0),
-      },
-   };
+   uint64_t in_flags =
+      exec ? (KBASE_MEM_FLAGS_EXEC | (exec_no_coherent_local ? 0 : BASE_MEM_COHERENT_LOCAL))
+           : KBASE_MEM_FLAGS_RW | (grow ? BASE_MEM_GROW_ON_GPF : 0) |
+                ((flags & PAN_KMOD_BO_FLAG_WB_MMAP) ? BASE_MEM_CACHED_CPU : 0);
 
    /* Not CSF_EVENT memory, although a queue descheduled while waiting on a sync object is
     * only resumed by kbase re-reading that object through the permanent kernel mapping such
@@ -674,21 +669,39 @@ kbase_kmod_bo_alloc(struct pan_kmod_dev *dev, struct pan_kmod_vm *exclusive_vm, 
     * descriptor and the vertex data in it; a plain BO draws). PanVK's waits are on queues of the
     * same group, one of which is making progress, so the group is not idle while they wait. */
    if (kbase_dev->csf && !exec && (flags & PAN_KMOD_BO_FLAG_GPU_UNCACHED))
-      req.in.flags |= BASE_MEM_UNCACHED_GPU;
+      in_flags |= BASE_MEM_UNCACHED_GPU;
 
    /* Sync objects: CSF_EVENT, in exactly the shape csfring allocated its seqnos with (kbase adds
     * CACHED_CPU and COHERENT_SYSTEM itself, and refuses the vendor's RW shape with the flag). */
    if (kbase_dev->csf && !exec && !grow && (flags & PAN_KMOD_BO_FLAG_KBASE_SYNC))
-      req.in.flags = 0xfull | BASE_MEM_SAME_VA | BASE_MEM_CSF_EVENT;
+      in_flags = 0xfull | BASE_MEM_SAME_VA | BASE_MEM_CSF_EVENT;
+
+   union kbase_ioctl_mem_alloc req = {
+      .in = {
+         .va_pages = pages,
+         .commit_pages = grow ? MIN2(pages, KBASE_GROW_INITIAL_PAGES) : pages,
+         .extension = grow ? KBASE_GROW_STEP_PAGES : 0,
+         .flags = in_flags,
+      },
+   };
 
    if (pan_kmod_ioctl(dev->fd, KBASE_IOCTL_MEM_ALLOC, &req)) {
-      if (exec && (req.in.flags & BASE_MEM_COHERENT_LOCAL)) {
-         req.in.flags &= ~BASE_MEM_COHERENT_LOCAL;
+      if (exec && (in_flags & BASE_MEM_COHERENT_LOCAL)) {
+         exec_no_coherent_local = true;
+         in_flags &= ~BASE_MEM_COHERENT_LOCAL;
+         req = (union kbase_ioctl_mem_alloc){
+            .in = {
+               .va_pages = pages,
+               .commit_pages = pages,
+               .extension = 0,
+               .flags = in_flags,
+            },
+         };
          if (!pan_kmod_ioctl(dev->fd, KBASE_IOCTL_MEM_ALLOC, &req))
             goto alloc_ok;
       }
       mesa_loge("kbase: MEM_ALLOC of %" PRIu64 " pages, flags 0x%" PRIx64 ", failed (err=%d)",
-                pages, (uint64_t)req.in.flags, errno);
+                pages, (uint64_t)in_flags, errno);
       pan_kmod_dev_free(dev, bo);
       return NULL;
    }

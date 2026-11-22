@@ -89,6 +89,7 @@ panvk_BindBufferMemory2(VkDevice _device, uint32_t bindInfoCount,
          *bind_status->pResult = VK_SUCCESS;
 
       buffer->vk.device_address = mem->addr.dev + pBindInfos[i].memoryOffset;
+      buffer->cpu_readable_mem = mem && mem->bo && !(mem->bo->flags & PAN_KMOD_BO_FLAG_NO_MMAP);
 
       panvk_address_binding_report(device, &buffer->vk.base,
                                    buffer->vk.device_address, buffer->vk.size,
