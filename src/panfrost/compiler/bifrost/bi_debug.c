@@ -35,12 +35,15 @@ static const struct debug_named_value bifrost_debug_options[] = {
 
 DEBUG_GET_ONCE_FLAGS_OPTION(bifrost_debug, "BIFROST_MESA_DEBUG",
                             bifrost_debug_options, 0)
+DEBUG_GET_ONCE_BOOL_OPTION(panvk_no_preload, "PANVK_NO_PRELOAD", false)
 
 unsigned bifrost_debug = 0;
 
 void
 bifrost_init_debug_options() {
    bifrost_debug = debug_get_option_bifrost_debug();
+   if (debug_get_option_panvk_no_preload())
+      bifrost_debug |= BIFROST_DBG_NOPRELOAD;
 }
 
 uint32_t

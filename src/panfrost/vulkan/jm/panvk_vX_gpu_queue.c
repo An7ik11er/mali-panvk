@@ -90,31 +90,62 @@ panvk_dump_exec_fault_slab(struct panvk_device *dev, const char *pool_name,
          fprintf(flog, "panvk: [%s] bo dev=0x%" PRIx64 "..0x%" PRIx64 " (sz=0x%" PRIx64 ") host=%p\n",
                  pool_name, (uint64_t)bo->addr.dev, (uint64_t)(bo->addr.dev + sz), sz, bo->addr.host);
       }
-      if (bo->addr.host &&
-          fault_addr >= bo->addr.dev &&
-          fault_addr < bo->addr.dev + sz) {
-         uint64_t offset = fault_addr - bo->addr.dev;
-         const uint32_t *dump_ptr = (const uint32_t *)((const uint8_t *)bo->addr.host + (offset & ~0x3full));
-         mesa_loge("panvk: [%s] slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):",
-                   pool_name, (uint64_t)(bo->addr.dev + (offset & ~0x3full)), fault_addr);
-         if (flog) {
-            fprintf(flog, "panvk: [%s] slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):\n",
-                    pool_name, (uint64_t)(bo->addr.dev + (offset & ~0x3full)), fault_addr);
-         }
-         for (int line = 0; line < 4; line++) {
-            mesa_loge("panvk:   +0x%02x: %08x %08x %08x %08x",
-                      line * 16,
-                      dump_ptr[line * 4 + 0], dump_ptr[line * 4 + 1],
-                      dump_ptr[line * 4 + 2], dump_ptr[line * 4 + 3]);
+      if (!bo->addr.host)
+         continue;
+
+      /* Candidate addresses to match:
+       * 1. Clause index (PC shifted by 4 bits / 16 bytes): fault_addr << 4.
+       *    Mali Job Manager hardware writes the 128-bit clause index (PC >> 4) into Word 2,
+       *    so a 36-bit address (e.g. 0x7_0001_6f00) appears in Word 2 as 0x700016f0.
+       * 2. Direct exact address: fault_addr.
+       * 3. 32-bit masked clause address: (bo->addr.dev & ~0xffffffffULL) | ((fault_addr << 4) & 0xffffffffULL).
+       * 4. 32-bit masked raw address: (bo->addr.dev & ~0xffffffffULL) | (fault_addr & 0xffffffffULL).
+       */
+      const uint64_t cand_addrs[] = {
+         fault_addr << 4,
+         fault_addr,
+         (bo->addr.dev & ~0xffffffffull) | ((fault_addr << 4) & 0xffffffffull),
+         (bo->addr.dev & ~0xffffffffull) | (fault_addr & 0xffffffffull),
+      };
+
+      for (unsigned ci = 0; ci < ARRAY_SIZE(cand_addrs); ci++) {
+         uint64_t c = cand_addrs[ci];
+         if (c >= bo->addr.dev && c < bo->addr.dev + sz) {
+            uint64_t offset = c - bo->addr.dev;
+            /* Center the dump around the fault: show up to 64 bytes before and 64 bytes after (128 bytes total) */
+            uint64_t dump_start = (offset >= 64) ? ((offset - 64) & ~0x3full) : 0;
+            if (dump_start + 128 > sz)
+               dump_start = (sz >= 128) ? (sz - 128) : 0;
+
+            const uint32_t *dump_ptr = (const uint32_t *)((const uint8_t *)bo->addr.host + dump_start);
+            mesa_loge("panvk: [%s] slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 " -> resolved=0x%" PRIx64 ", off=+0x%" PRIx64 "):",
+                      pool_name, (uint64_t)(bo->addr.dev + dump_start), fault_addr, c, offset);
             if (flog) {
-               fprintf(flog, "panvk:   +0x%02x: %08x %08x %08x %08x\n",
-                       line * 16,
-                       dump_ptr[line * 4 + 0], dump_ptr[line * 4 + 1],
-                       dump_ptr[line * 4 + 2], dump_ptr[line * 4 + 3]);
+               fprintf(flog, "panvk: [%s] slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 " -> resolved=0x%" PRIx64 ", off=+0x%" PRIx64 "):\n",
+                       pool_name, (uint64_t)(bo->addr.dev + dump_start), fault_addr, c, offset);
             }
+            unsigned nr_lines = (unsigned)((sz - dump_start) / 16);
+            if (nr_lines > 8)
+               nr_lines = 8;
+            for (unsigned line = 0; line < nr_lines; line++) {
+               uint64_t cur_line_dev = bo->addr.dev + dump_start + line * 16;
+               const char *marker = (c >= cur_line_dev && c < cur_line_dev + 16) ? "=>" : "  ";
+               mesa_loge("panvk: %s +0x%04x: %08x %08x %08x %08x",
+                         marker,
+                         (unsigned)(dump_start + line * 16),
+                         dump_ptr[line * 4 + 0], dump_ptr[line * 4 + 1],
+                         dump_ptr[line * 4 + 2], dump_ptr[line * 4 + 3]);
+               if (flog) {
+                  fprintf(flog, "panvk: %s +0x%04x: %08x %08x %08x %08x\n",
+                          marker,
+                          (unsigned)(dump_start + line * 16),
+                          dump_ptr[line * 4 + 0], dump_ptr[line * 4 + 1],
+                          dump_ptr[line * 4 + 2], dump_ptr[line * 4 + 3]);
+               }
+            }
+            *dumped = true;
+            return;
          }
-         *dumped = true;
-         break;
       }
    }
 }
@@ -227,6 +258,14 @@ panvk_kbase_report_faults(struct panvk_device *dev, struct panvk_cmd_buffer *con
                   if (!dumped)
                      panvk_dump_exec_fault_slab(dev, "rw-big", &dev->mempools.rw.big_bos, fault_addr, &dumped, flog);
                   simple_mtx_unlock(&dev->mempools.rw.lock);
+               }
+
+               if (!dumped) {
+                  for (uint32_t c = 0; c < nr_cmdbufs && !dumped; ++c) {
+                     panvk_dump_exec_fault_slab(dev, "cmdbuf-desc", &cmdbufs[c]->desc_pool.bos, fault_addr, &dumped, flog);
+                     if (!dumped)
+                        panvk_dump_exec_fault_slab(dev, "cmdbuf-desc-big", &cmdbufs[c]->desc_pool.big_bos, fault_addr, &dumped, flog);
+                  }
                }
             }
             k++;
