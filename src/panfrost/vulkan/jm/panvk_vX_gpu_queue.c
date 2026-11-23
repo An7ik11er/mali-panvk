@@ -78,20 +78,28 @@ panvk_queue_prepare_batch(struct panvk_device *dev, struct panvk_cmd_buffer *cmd
 }
 
 static void
-panvk_dump_exec_fault_slab(struct panvk_device *dev, struct list_head *bos,
-                           uint64_t fault_addr, bool *dumped, FILE *flog)
+panvk_dump_exec_fault_slab(struct panvk_device *dev, const char *pool_name,
+                           struct list_head *bos, uint64_t fault_addr,
+                           bool *dumped, FILE *flog)
 {
    list_for_each_entry(struct panvk_priv_bo, bo, bos, node) {
-      if (bo->bo && bo->addr.host &&
+      if (!bo->bo)
+         continue;
+      uint64_t sz = bo->bo->size;
+      if (flog) {
+         fprintf(flog, "panvk: [%s] bo dev=0x%" PRIx64 "..0x%" PRIx64 " (sz=0x%" PRIx64 ") host=%p\n",
+                 pool_name, (uint64_t)bo->addr.dev, (uint64_t)(bo->addr.dev + sz), sz, bo->addr.host);
+      }
+      if (bo->addr.host &&
           fault_addr >= bo->addr.dev &&
-          fault_addr < bo->addr.dev + bo->bo->size) {
+          fault_addr < bo->addr.dev + sz) {
          uint64_t offset = fault_addr - bo->addr.dev;
          const uint32_t *dump_ptr = (const uint32_t *)((const uint8_t *)bo->addr.host + (offset & ~0x3full));
-         mesa_loge("panvk: exec slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):",
-                   (uint64_t)(bo->addr.dev + (offset & ~0x3full)), fault_addr);
+         mesa_loge("panvk: [%s] slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):",
+                   pool_name, (uint64_t)(bo->addr.dev + (offset & ~0x3full)), fault_addr);
          if (flog) {
-            fprintf(flog, "panvk: exec slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):\n",
-                    (uint64_t)(bo->addr.dev + (offset & ~0x3full)), fault_addr);
+            fprintf(flog, "panvk: [%s] slab dump at 0x%" PRIx64 " (fault=0x%" PRIx64 "):\n",
+                    pool_name, (uint64_t)(bo->addr.dev + (offset & ~0x3full)), fault_addr);
          }
          for (int line = 0; line < 4; line++) {
             mesa_loge("panvk:   +0x%02x: %08x %08x %08x %08x",
@@ -208,10 +216,18 @@ panvk_kbase_report_faults(struct panvk_device *dev, struct panvk_cmd_buffer *con
             if (fault_addr) {
                bool dumped = false;
                simple_mtx_lock(&dev->mempools.exec.lock);
-               panvk_dump_exec_fault_slab(dev, &dev->mempools.exec.bos, fault_addr, &dumped, flog);
+               panvk_dump_exec_fault_slab(dev, "exec", &dev->mempools.exec.bos, fault_addr, &dumped, flog);
                if (!dumped)
-                  panvk_dump_exec_fault_slab(dev, &dev->mempools.exec.big_bos, fault_addr, &dumped, flog);
+                  panvk_dump_exec_fault_slab(dev, "exec-big", &dev->mempools.exec.big_bos, fault_addr, &dumped, flog);
                simple_mtx_unlock(&dev->mempools.exec.lock);
+
+               if (!dumped) {
+                  simple_mtx_lock(&dev->mempools.rw.lock);
+                  panvk_dump_exec_fault_slab(dev, "rw", &dev->mempools.rw.bos, fault_addr, &dumped, flog);
+                  if (!dumped)
+                     panvk_dump_exec_fault_slab(dev, "rw-big", &dev->mempools.rw.big_bos, fault_addr, &dumped, flog);
+                  simple_mtx_unlock(&dev->mempools.rw.lock);
+               }
             }
             k++;
          }

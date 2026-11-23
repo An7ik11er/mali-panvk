@@ -37,9 +37,12 @@ bifrost_get_quirks(unsigned arch, const struct pan_model *model)
    if (model)
       arch_minor = (model->gpu_prod_id >> 8) & 0xff;
 
-   /* Applies to archs before 6.2 */
+   /* Applies to all Bifrost architectures (v6 and v7).
+    * Bifrost GPUs lack reliable native hardware FP32 transcendentals (FEXP.f32,
+    * FLOGD.f32, etc.), causing 0x51 INSTR_INVALID_ENC on Mali-G52 when invoked directly.
+    * Lowering to polynomial approximation and lookup tables is required. */
    unsigned quirks = 0;
-   if (arch < 7 && arch_minor < 2)
+   if (arch <= 8)
       quirks |= BIFROST_NO_FP32_TRANSCENDENTALS;
 
    /* Applies to archs before 7.2 */
